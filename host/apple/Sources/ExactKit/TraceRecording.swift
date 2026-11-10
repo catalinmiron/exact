@@ -22,9 +22,10 @@ import AppKit
 #endif
 
 extension ExactSession {
-    /// The host commands `startTrace_EXPERIMENTAL()` and `stopTrace_EXPERIMENTAL([maxBytes])`.
+    /// The host commands `startTrace_EXPERIMENTAL()` and `stopTrace_EXPERIMENTAL([maxBytes | id])`.
     func traceCommand(_ name: String, _ args: [Any]) {
         if name == "startTrace_EXPERIMENTAL" { startTrace(); return }
+        if let id = args.first as? String { stopTrace(answering: id); return }
         stopTrace(maxBytes: (args.first as? NSNumber)?.intValue)
     }
 
@@ -56,6 +57,51 @@ extension ExactSession {
     /// tvOS, which has none, only save it), cut to `maxBytes` when given;
     /// what was copied, or nil when no recording was running.
     @discardableResult public func stopTrace(maxBytes: Int? = nil) -> String? {
+        guard let trace = endTrace(in: FrameSampler.traceDirectory) else { return nil }
+        let (report, data, url, frames) = trace
+        let copied = maxBytes.map { FrameSampler.compact(report, file: url?.lastPathComponent, bytes: data.count, maxBytes: $0) } ?? data
+        let text = String(decoding: copied, as: UTF8.self)
+        let saved = url.map { ", saved to \($0.path)" } ?? ", not saved"
+        #if os(tvOS)
+        // tvOS has no clipboard: the file is the only copy
+        log("trace recorded: \(data.count) bytes, \(frames) frames\(saved)")
+        #else
+        #if canImport(UIKit)
+        UIPasteboard.general.string = text
+        #else
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #endif
+        log("trace copied: \(copied.count) bytes of \(data.count), \(frames) frames\(saved)")
+        #endif
+        return text
+    }
+
+    /// `stopTrace_EXPERIMENTAL(id)`: end the recording and save its whole
+    /// trace in `app:/tmp/traces/`, where the app's own code reads it
+    /// (`fs.read app:/tmp`) to keep or send, leaving the clipboard alone.
+    /// `change` at the element `id` names hears the file's `app:/` path, or
+    /// `failed` when no recording was running or the file was not saved
+    /// there. The path, or nil.
+    @discardableResult public func stopTrace(answering id: String) -> String? {
+        let folder = appFileRoots["tmp"].map { URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent("traces", isDirectory: true) }
+        if let folder { try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        var path: String?
+        if let trace = endTrace(in: folder ?? FrameSampler.traceDirectory) {
+            if folder != nil, let url = trace.url { path = "app:/tmp/traces/\(url.lastPathComponent)" }
+            let saved = path.map { "saved to \($0)" } ?? trace.url.map { "saved to \($0.path), not under app:/tmp" } ?? "not saved"
+            log("trace recorded for the app: \(trace.data.count) bytes, \(trace.frames) frames, \(saved)")
+        }
+        guard state != .destroyed,
+              let view = (runtime.command(["command": "stopTrace_EXPERIMENTAL", "id": id])["view"] as? NSNumber)?.uint32Value else { return path }
+        apply(runtime.change(view, path ?? "failed", now: now()))
+        return path
+    }
+
+    /// End the recording and save its whole trace in `directory`: its
+    /// report, its JSON, where it was saved (nil when it was not) and its
+    /// frame count; nil when no recording was running.
+    private func endTrace(in directory: URL) -> (report: [String: Any], data: Data, url: URL?, frames: Int)? {
         guard let sampler, let recording = sampler.endRecording() else {
             log("stopTrace_EXPERIMENTAL refused: no recording is running")
             return nil
@@ -78,25 +124,10 @@ extension ExactSession {
         let stamps = ISO8601DateFormatter()
         stamps.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var url: URL?
-        do { url = try FrameSampler.save(data, in: FrameSampler.traceDirectory, stamp: stamps.string(from: Date()).replacingOccurrences(of: ":", with: "-")) } catch {
+        do { url = try FrameSampler.save(data, in: directory, stamp: stamps.string(from: Date()).replacingOccurrences(of: ":", with: "-")) } catch {
             log("stopTrace_EXPERIMENTAL: the whole trace was not saved: \(error.localizedDescription)")
         }
-        let copied = maxBytes.map { FrameSampler.compact(report, file: url?.lastPathComponent, bytes: data.count, maxBytes: $0) } ?? data
-        let text = String(decoding: copied, as: UTF8.self)
-        let saved = url.map { ", saved to \($0.path)" } ?? ", not saved"
-        #if os(tvOS)
-        // tvOS has no clipboard: the file is the only copy
-        log("trace recorded: \(data.count) bytes, \(recording.records.count) frames\(saved)")
-        #else
-        #if canImport(UIKit)
-        UIPasteboard.general.string = text
-        #else
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        #endif
-        log("trace copied: \(copied.count) bytes of \(data.count), \(recording.records.count) frames\(saved)")
-        #endif
-        return text
+        return (report, data, url, recording.records.count)
     }
 
     private func traceWork() -> [String: Any] {

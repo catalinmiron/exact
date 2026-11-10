@@ -173,7 +173,9 @@ pub const HOST_COMMANDS: &[&str] = &[
     // `startTrace_EXPERIMENTAL()` records the display link's callbacks until
     // `stopTrace_EXPERIMENTAL()`, which puts the trace on the clipboard as JSON
     // (`stopTrace_EXPERIMENTAL(maxBytes)`: cut to that size; tvOS, with no
-    // clipboard, only saves the file): Save Trace's frames, from an app's own
+    // clipboard, only saves the file; `stopTrace_EXPERIMENTAL(id)`: no
+    // clipboard, the file in `app:/tmp/traces/` and its path at `id`'s
+    // `change`): Save Trace's frames, from an app's own
     // control, in a production build too (Apple; web and Linux refuse it in
     // the journal). Experimental: the names say so while the trace's
     // fields may still change.

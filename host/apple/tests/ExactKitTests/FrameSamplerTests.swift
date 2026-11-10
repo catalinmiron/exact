@@ -447,6 +447,26 @@ final class FrameSamplerTests: XCTestCase {
         XCTAssertTrue(logs.contains("the whole trace was not saved"))
         XCTAssertTrue(logs.contains(", not saved"))
     }
+
+    /// `stopTrace_EXPERIMENTAL(id)` saves the whole trace where the app's own
+    /// code reads it, `app:/tmp/traces/`, and leaves the clipboard alone.
+    func testATraceForTheAppIsSavedUnderItsTmpAndNotCopied() throws {
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("app-tmp-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let session = ExactApp.shared.makeSession()
+        defer { session.destroy() }
+        XCTAssertNil(session.boot(size: CGSize(width: 390, height: 844)).error)
+        session.appFileRoots["tmp"] = tmp.path
+        UIPasteboard.general.string = "the person's"
+        session.startTrace()
+        let path = try XCTUnwrap(session.stopTrace(answering: "trace"))
+        XCTAssertTrue(path.hasPrefix("app:/tmp/traces/trace-recording-"), path)
+        let file = tmp.appendingPathComponent(String(path.dropFirst("app:/tmp/".count)))
+        let trace = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        XCTAssertEqual(trace["exactTrace"] as? String, "recording")
+        XCTAssertEqual(UIPasteboard.general.string, "the person's")
+        XCTAssertNil(session.stopTrace(answering: "trace"), "no recording is running")
+    }
     #endif
 
     #if canImport(UIKit)

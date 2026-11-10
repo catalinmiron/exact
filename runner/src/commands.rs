@@ -3,7 +3,8 @@
 //! runner's ruling, refused, held for the agent, or present it. `command`
 //! names which: `share` (LLP 1069.003), `saveFile` (LLP 1069.010 D3), the
 //! three pickers (D2) and `requestPermission` (LLP 1069.010.000 D7); and
-//! `openURL`'s answer, the element that hears whether the URL opened.
+//! `openURL`'s and `stopTrace_EXPERIMENTAL(id)`'s answers, the element that
+//! hears whether the URL opened or where the trace was saved.
 
 use crate::agent::{error, field_str};
 use crate::{DataSource, Runner};
@@ -32,16 +33,29 @@ pub fn request<D: DataSource>(runner: &mut Runner<D>, json: &str) -> String {
             Some((_, pick)) => pick(runner, json),
             None => error("the file pickers are not linked into this artifact"),
         },
-        Some("openURL") => open_url(runner, json),
+        Some("openURL") => answered_at(runner, json, "openURL", "whether the URL opened"),
+        Some("stopTrace_EXPERIMENTAL") => answered_at(
+            runner,
+            json,
+            "stopTrace_EXPERIMENTAL",
+            "where the trace was saved",
+        ),
         Some(other) => error(&format!("no ruling for command {other}")),
         None => error("no command"),
     }
 }
 
 /// `{"command":"openURL","id":…}`: `openURL(url, id)`'s answer goes to that
-/// element's `change` (`opened` or `failed`), `{"view":N}`; an id no live
-/// element has is said in the journal, `{"error":…}`, and nothing hears it.
-fn open_url<D: DataSource>(runner: &mut Runner<D>, json: &str) -> String {
+/// element's `change` (`opened` or `failed`), `{"view":N}`; so does
+/// `stopTrace_EXPERIMENTAL(id)`'s (the trace's `app:/` path, or `failed`). An
+/// id no live element has is said in the journal, `{"error":…}`, and nothing
+/// hears it.
+fn answered_at<D: DataSource>(
+    runner: &mut Runner<D>,
+    json: &str,
+    command: &str,
+    what: &str,
+) -> String {
     let id = field_str(json, "id").unwrap_or_default();
     let kernel = runner.kernel();
     let view = kernel
@@ -51,8 +65,8 @@ fn open_url<D: DataSource>(runner: &mut Runner<D>, json: &str) -> String {
     match view {
         Some(view) => format!("{{\"view\":{view}}}"),
         None => {
-            let why = format!("no element with id \"{id}\" hears whether the URL opened");
-            runner.log(format!("openURL: {why}"));
+            let why = format!("no element with id \"{id}\" hears {what}");
+            runner.log(format!("{command}: {why}"));
             error(&why)
         }
     }
@@ -84,6 +98,29 @@ mod tests {
         assert!(
             absent.starts_with(r#"{"error":"no element with id"#),
             "{absent}"
+        );
+    }
+
+    #[test]
+    fn a_trace_is_answered_at_the_element_its_id_names() {
+        let plan = contract::compile(
+            "component App\n  view\n    column\n      input id=\"trace\" display=\"none\"\n",
+        )
+        .unwrap();
+        let kernel = exact_kernel::Kernel::with_monospace();
+        let mut runner = Runner::boot(plan, NoData, kernel, Default::default(), "/").unwrap();
+        let found = request(
+            &mut runner,
+            r#"{"command":"stopTrace_EXPERIMENTAL","id":"trace"}"#,
+        );
+        assert!(found.starts_with(r#"{"view":"#), "{found}");
+        let absent = request(
+            &mut runner,
+            r#"{"command":"stopTrace_EXPERIMENTAL","id":"absent"}"#,
+        );
+        assert_eq!(
+            absent,
+            r#"{"error":"no element with id \"absent\" hears where the trace was saved"}"#
         );
     }
 }
